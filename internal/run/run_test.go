@@ -123,7 +123,7 @@ func TestRun_Report(t *testing.T) { // RP: report to stderr
 	cfg := Config{GrepLines: []string{"https://t/a.js"}, OutPath: filepath.Join(t.TempDir(), "o"), Timeout: time.Second}
 	Run(context.Background(), cfg, d)
 	s := errb.String()
-	if !strings.Contains(s, "fetch done") || !strings.Contains(s, "found") {
+	if !strings.Contains(s, "done in") || !strings.Contains(s, "found") {
 		t.Fatalf("RP: report missing: %q", s)
 	}
 }

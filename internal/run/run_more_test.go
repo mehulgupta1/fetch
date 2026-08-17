@@ -25,11 +25,11 @@ func TestO3_DOnly(t *testing.T) {
 	cfg := Config{URLForms: []string{"https://t"}, HostForms: []string{"t"}, OutPath: tmp(t), Timeout: time.Second}
 	Run(context.Background(), cfg, d)
 	s := errb.String()
-	if strings.Contains(s, "grep started") {
+	if strings.Contains(s, "grep") {
 		t.Fatal("O3: grep must NOT run with -d only")
 	}
 	for _, n := range []string{"subjs", "getJS", "katana", "hakrawler", "urlscan"} {
-		if !strings.Contains(s, n+" started") {
+		if !strings.Contains(s, n) {
 			t.Fatalf("O3: %s should run", n)
 		}
 	}
@@ -41,7 +41,7 @@ func TestO4_All6(t *testing.T) {
 	Run(context.Background(), cfg, d)
 	s := errb.String()
 	for _, n := range []string{"grep", "subjs", "getJS", "katana", "hakrawler", "urlscan"} {
-		if !strings.Contains(s, n+" started") {
+		if !strings.Contains(s, n) {
 			t.Fatalf("O4: all 6 -> %s missing", n)
 		}
 	}
@@ -52,7 +52,7 @@ func TestO12_ToolNotInstalled(t *testing.T) {
 	d, _, errb := depsWith(fexec{}, res)
 	cfg := Config{URLForms: []string{"https://t"}, HostForms: []string{"t"}, OutPath: tmp(t), Timeout: time.Second}
 	Run(context.Background(), cfg, d)
-	if !strings.Contains(errb.String(), "subjs skipped") {
+	if !strings.Contains(errb.String(), "subjs") || !strings.Contains(errb.String(), "skipped (not installed)") {
 		t.Fatalf("O12: subjs should be skipped: %s", errb.String())
 	}
 }
@@ -75,7 +75,7 @@ func TestO27_AllEmpty(t *testing.T) {
 	cfg := Config{URLForms: []string{"https://t"}, HostForms: []string{"t"}, OutPath: out}
 	cfg.Timeout = time.Second
 	Run(context.Background(), cfg, d)
-	if !strings.Contains(errb.String(), "found   0 js") {
+	if !strings.Contains(errb.String(), "0 found") {
 		t.Fatalf("O27: report should show 0 found")
 	}
 	data, _ := os.ReadFile(out)
@@ -110,7 +110,7 @@ func TestSL2_NoReport(t *testing.T) {
 	d, _, errb := depsWith(fexec{}, func(s string) (string, bool) { return s, true })
 	cfg := Config{GrepLines: []string{"https://t/a.js"}, Silent: true, OutPath: tmp(t), Timeout: time.Second}
 	Run(context.Background(), cfg, d)
-	if strings.Contains(errb.String(), "fetch done") {
+	if strings.Contains(errb.String(), "done in") {
 		t.Fatal("SL2: --silent must hide report")
 	}
 }
@@ -142,16 +142,16 @@ func TestPR_Lines(t *testing.T) {
 	cfg := Config{URLForms: []string{"https://t"}, HostForms: []string{"t"}, OutPath: tmp(t), Timeout: time.Second}
 	Run(context.Background(), cfg, d)
 	s := errb.String()
-	if !strings.Contains(s, "[>]") { // PR1 started
-		t.Fatal("PR1: started line")
+	if !strings.Contains(s, "running") { // PR1: "running N sources..."
+		t.Fatal("PR1: running header")
 	}
 	if !strings.Contains(s, "[ok]") { // PR2 done
 		t.Fatal("PR2: done line")
 	}
-	if !strings.Contains(s, "getJS skipped") { // PR3
+	if !strings.Contains(s, "getJS") || !strings.Contains(s, "skipped (not installed)") { // PR3
 		t.Fatal("PR3: skipped line")
 	}
-	if !strings.Contains(s, "katana failed") { // PR4
+	if !strings.Contains(s, "katana") || !strings.Contains(s, "failed:") { // PR4
 		t.Fatal("PR4: failed line")
 	}
 }
@@ -160,7 +160,7 @@ func TestPR9_SilentNoProgress(t *testing.T) {
 	d, _, errb := depsWith(fexec{}, func(s string) (string, bool) { return s, true })
 	cfg := Config{URLForms: []string{"https://t"}, HostForms: []string{"t"}, Silent: true, OutPath: tmp(t), Timeout: time.Second}
 	Run(context.Background(), cfg, d)
-	if strings.Contains(errb.String(), "[>]") {
+	if strings.Contains(errb.String(), "running") || strings.Contains(errb.String(), "[ok]") {
 		t.Fatal("PR9: --silent -> no progress")
 	}
 }
@@ -172,7 +172,7 @@ func TestRP_Content(t *testing.T) {
 	cfg := Config{URLForms: []string{"https://target.com"}, HostForms: []string{"target.com"}, InScope: true, OutPath: tmp(t), Timeout: time.Second}
 	Run(context.Background(), cfg, d)
 	s := errb.String()
-	for _, want := range []string{"fetch done", "sources", "found", "unique", "in-scope drop", "saved"} {
+	for _, want := range []string{"done in", "found", "unique", "out-of-scope"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("RP: report missing %q in %s", want, s)
 		}
@@ -183,7 +183,7 @@ func TestRP6_NoInScopeLine(t *testing.T) {
 	d, _, errb := depsWith(fexec{}, func(s string) (string, bool) { return s, true })
 	cfg := Config{GrepLines: []string{"https://t/a.js"}, OutPath: tmp(t), Timeout: time.Second}
 	Run(context.Background(), cfg, d)
-	if strings.Contains(errb.String(), "in-scope drop") {
+	if strings.Contains(errb.String(), "out-of-scope") {
 		t.Fatal("RP6: no --in-scope -> no drop line")
 	}
 }
@@ -258,7 +258,7 @@ func TestHL2_KatanaFailsGraceful(t *testing.T) {
 	d, _, errb := depsWith(f, func(s string) (string, bool) { return s, true })
 	cfg := Config{URLForms: []string{"https://t"}, HostForms: []string{"t"}, Opts: optHeadless(), OutPath: tmp(t), Timeout: time.Second}
 	code := Run(context.Background(), cfg, d)
-	if code != 0 || !strings.Contains(errb.String(), "katana failed") {
+	if code != 0 || !strings.Contains(errb.String(), "failed:") {
 		t.Fatalf("HL2: katana fails gracefully, run continues; code=%d", code)
 	}
 }

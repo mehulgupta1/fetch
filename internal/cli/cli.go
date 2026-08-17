@@ -88,20 +88,47 @@ func dispatchSetup(d Deps) int {
 			return runVisible(d, setup.GoInstallCmd(pkg))
 		},
 	}
-	fmt.Fprintln(d.Stdout, "fetch -setup: installing subjs + getJS + katana + hakrawler ...")
+	fmt.Fprintln(d.Stdout, "fetch -setup: checking subjs + getJS + katana + hakrawler ...")
+	fmt.Fprintln(d.Stdout)
 	rep := setup.Run(toolOrder, deps)
-	report(d, "installed", rep.Installed)
-	report(d, "skipped", rep.Skipped)
-	report(d, "failed", rep.Failed)
+
+	for _, t := range toolOrder {
+		switch {
+		case containsStr(rep.Installed, t):
+			p, _ := r.Resolve(t)
+			fmt.Fprintf(d.Stdout, "  [+] %-10s installed        %s\n", t, p)
+		case containsStr(rep.Skipped, t):
+			p, _ := r.Resolve(t)
+			fmt.Fprintf(d.Stdout, "  [=] %-10s already present  %s\n", t, p)
+		case containsStr(rep.Failed, t):
+			fmt.Fprintf(d.Stdout, "  [x] %-10s FAILED - see errors above\n", t)
+		}
+	}
+
+	ready := len(rep.Installed) + len(rep.Skipped)
+	fmt.Fprintf(d.Stdout, "\n  %d/%d tools ready", ready, len(toolOrder))
+	if len(rep.Failed) > 0 {
+		fmt.Fprintf(d.Stdout, "  -  %d failed", len(rep.Failed))
+	}
+	fmt.Fprintln(d.Stdout)
 
 	gobin := resolve.GoBinDir()
 	if !strings.Contains(os.Getenv("PATH"), gobin) {
-		fmt.Fprintf(d.Stdout, "NOTE: add gobin to PATH:  export PATH=\"$PATH:%s\"\n", gobin)
+		fmt.Fprintf(d.Stdout, "\nNOTE: add gobin to PATH so the tools are found at run time:\n  export PATH=\"$PATH:%s\"\n", gobin)
 	}
 	if len(rep.Failed) > 0 {
 		return 1
 	}
 	return 0
+}
+
+func containsStr(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func dispatchConfig(d Deps, args []string) int {
@@ -152,9 +179,3 @@ func runVisible(d Deps, argv []string) error {
 	return cmd.Run()
 }
 
-func report(d Deps, label string, items []string) {
-	if len(items) == 0 {
-		return
-	}
-	fmt.Fprintf(d.Stdout, "  %-9s %s\n", label+":", strings.Join(items, ", "))
-}

@@ -3,35 +3,36 @@ package run
 import (
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/mehulgupta1/fetch/internal/source"
 )
 
-// report prints the final summary to stderr (see JS_PLAN 3c).
+// report prints the compact final summary to stderr.
 func report(w io.Writer, results []source.Result, rawTotal, unique, dropped int, cfg Config, elapsed time.Duration) {
-	fmt.Fprintf(w, "-------- fetch done (%s) --------\n", elapsed.Round(time.Second))
-	fmt.Fprintln(w, " sources")
+	fmt.Fprintf(w, "\n  done in %s\n", elapsed.Round(time.Second))
+
+	var parts []string
 	for _, r := range results {
 		switch r.Status {
 		case "ok":
-			fmt.Fprintf(w, "   %-11s %d\n", r.Name, len(r.URLs))
+			parts = append(parts, fmt.Sprintf("%s %d", r.Name, len(r.URLs)))
 		case "skipped":
-			fmt.Fprintf(w, "   %-11s skipped (%s)\n", r.Name, r.Reason)
+			parts = append(parts, r.Name+" skip")
 		case "failed":
-			fmt.Fprintf(w, "   %-11s failed (%s)\n", r.Name, r.Reason)
+			parts = append(parts, r.Name+" fail")
 		}
 	}
-	fmt.Fprintf(w, " found   %d js  ->  %d unique\n", rawTotal, unique)
+	fmt.Fprintf(w, "  %s\n", strings.Join(parts, " | "))
+
+	scope := ""
 	if cfg.InScope {
-		fmt.Fprintf(w, " in-scope drop   %d\n", dropped)
+		scope = fmt.Sprintf("  (%d out-of-scope dropped)", dropped)
 	}
 	out := cfg.OutPath
 	if out == "" {
 		out = "js.txt"
 	}
-	if !cfg.Silent {
-		fmt.Fprintf(w, " saved   %s\n", out)
-	}
-	fmt.Fprintln(w, "----------------------------------")
+	fmt.Fprintf(w, "  %d found -> %d unique%s -> %s\n", rawTotal, unique, scope, out)
 }

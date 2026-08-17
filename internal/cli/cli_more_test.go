@@ -181,4 +181,42 @@ func TestLR4_NoTrailingNewline(t *testing.T) {
 	}
 }
 
+// ---- redirect following ----
+func TestExpandRedirects_AddsLandingHost(t *testing.T) {
+	orig := finalURL
+	defer func() { finalURL = orig }()
+	finalURL = func(u string) string {
+		if strings.Contains(u, "bmw.com") {
+			return "https://www.bmw.in/en/index.html"
+		}
+		return u
+	}
+	urls, hosts := expandRedirects([]string{"https://bmw.com"})
+	if !containsS(urls, "https://bmw.com") {
+		t.Fatal("must keep the original target")
+	}
+	if !containsS(hosts, "bmw.com") || !containsS(hosts, "www.bmw.in") {
+		t.Fatalf("must add landing host www.bmw.in, got hosts=%v", hosts)
+	}
+}
+
+func TestExpandRedirects_NoRedirect(t *testing.T) {
+	orig := finalURL
+	defer func() { finalURL = orig }()
+	finalURL = func(u string) string { return u } // no redirect
+	urls, hosts := expandRedirects([]string{"https://x.com"})
+	if len(urls) != 1 || len(hosts) != 1 {
+		t.Fatalf("same-host landing adds nothing, got %v %v", urls, hosts)
+	}
+}
+
+func containsS(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
 func tmpf(t *testing.T) string { return filepath.Join(t.TempDir(), "js.txt") }

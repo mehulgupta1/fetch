@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,17 @@ import (
 	"github.com/mehulgupta1/fetch/internal/jsfilter"
 	"github.com/mehulgupta1/fetch/internal/source"
 )
+
+// isTerminal reports whether w is a real terminal (so we can use in-place
+// line updates); false for pipes/files/buffers (plain output instead).
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
 
 // Deps are injectable boundaries.
 type Deps struct {
@@ -41,8 +53,11 @@ type Config struct {
 func Run(ctx context.Context, cfg Config, d Deps) int {
 	showProg := !cfg.Silent || cfg.Debug
 	pw := d.Stderr
+	tty := false
 	if !showProg {
 		pw = io.Discard
+	} else {
+		tty = isTerminal(d.Stderr)
 	}
 	start := time.Now()
 
@@ -105,73 +120,105 @@ func Run(ctx context.Context, cfg Config, d Deps) int {
 		}})
 	}
 
-	// run all jobs in parallel with live progress.
-	// mu guards BOTH the running map AND all writes to pw (parallel goroutines
-	// share one writer, so every progress line must be serialized).
+	// run all jobs in parallel with tidy live progress.
+	// mu guards the running map AND every write to pw (shared writer).
+	// Design: permanent result lines scroll normally; a SINGLE in-place
+	// status line at the bottom (TTY only) shows what's still running -
+	// no repeated "still running" spam.
+	if showProg {
+		fmt.Fprintf(pw, "  running %d sources...\n", len(jobs))
+	}
 	results := make([]source.Result, len(jobs))
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	running := map[string]bool{}
-	logf := func(format string, a ...any) {
-		mu.Lock()
-		fmt.Fprintf(pw, format, a...)
-		mu.Unlock()
-	}
-	setRunning := func(name string, on bool) {
-		mu.Lock()
-		if on {
-			running[name] = true
-		} else {
-			delete(running, name)
+	statusShown := false
+
+	// renderLive redraws the one status line in place (caller holds mu).
+	renderLive := func() {
+		if !tty {
+			return
 		}
+		var names []string
+		for n := range running {
+			names = append(names, n)
+		}
+		if len(names) == 0 {
+			if statusShown {
+				fmt.Fprint(pw, "\r\033[K")
+				statusShown = false
+			}
+			return
+		}
+		sort.Strings(names)
+		fmt.Fprintf(pw, "\r\033[K  ~ running: %s  (%s)",
+			strings.Join(names, ", "), time.Since(start).Round(time.Second))
+		statusShown = true
+	}
+	// line prints a permanent line above the live status line.
+	line := func(format string, a ...any) {
+		mu.Lock()
+		if tty && statusShown {
+			fmt.Fprint(pw, "\r\033[K")
+			statusShown = false
+		}
+		fmt.Fprintf(pw, format, a...)
+		renderLive()
 		mu.Unlock()
 	}
+
 	for i, j := range jobs {
-		logf("[>]  %s started\n", j.name)
-		setRunning(j.name, true)
+		mu.Lock()
+		running[j.name] = true
+		renderLive()
+		mu.Unlock()
 		wg.Add(1)
 		go func(i int, j job) {
 			defer wg.Done()
 			res := j.run()
-			setRunning(j.name, false)
 			results[i] = res
+			mu.Lock()
+			delete(running, j.name)
+			mu.Unlock()
 			switch res.Status {
 			case "ok":
-				logf("[ok] %s done: %d js\n", res.Name, len(res.URLs))
+				line("  [ok] %-10s %d js\n", res.Name, len(res.URLs))
 			case "skipped":
-				logf("[-]  %s skipped (%s)\n", res.Name, res.Reason)
+				line("  [-]  %-10s skipped (%s)\n", res.Name, res.Reason)
 			case "failed":
-				logf("[x]  %s failed: %s\n", res.Name, res.Reason)
+				line("  [x]  %-10s failed: %s\n", res.Name, res.Reason)
 			}
 		}(i, j)
 	}
 
-	// heartbeat every 15s until done.
+	// live-clock ticker: TTY only, updates the elapsed on the status line
+	// every second. No ticker off-TTY, so pipes/logs get no spam.
 	done := make(chan struct{})
-	go func() {
-		t := time.NewTicker(15 * time.Second)
-		defer t.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-t.C:
-				mu.Lock()
-				var names []string
-				for n := range running {
-					names = append(names, n)
-				}
-				mu.Unlock()
-				if len(names) > 0 {
-					logf("[..] %s still running: %s\n",
-						time.Since(start).Round(time.Second), strings.Join(names, ", "))
+	if tty {
+		go func() {
+			t := time.NewTicker(time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-done:
+					return
+				case <-t.C:
+					mu.Lock()
+					renderLive()
+					mu.Unlock()
 				}
 			}
-		}
-	}()
+		}()
+	}
 
 	wg.Wait()
 	close(done)
+	mu.Lock()
+	if tty && statusShown {
+		fmt.Fprint(pw, "\r\033[K")
+		statusShown = false
+	}
+	mu.Unlock()
 
 	// merge
 	var all []string

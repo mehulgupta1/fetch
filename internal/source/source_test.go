@@ -31,24 +31,24 @@ func TestKatanaArgs(t *testing.T) {
 	}
 }
 
-func TestKatanaArgs_SubsScope(t *testing.T) { // T4/T5
-	if !has(KatanaArgs(Options{Subs: false}, "l"), "-fs fqdn") {
-		t.Fatal("T5: no --subs -> fqdn")
+func TestKatanaArgs_ExactScope(t *testing.T) { // T4/T5 (default = subdomains)
+	if !has(KatanaArgs(Options{Exact: true}, "l"), "-fs fqdn") {
+		t.Fatal("--exact -> fqdn scope")
 	}
-	if has(KatanaArgs(Options{Subs: true}, "l"), "-fs fqdn") {
-		t.Fatal("T4: --subs -> rdn (no fqdn)")
+	if has(KatanaArgs(Options{}, "l"), "-fs fqdn") {
+		t.Fatal("default -> rdn scope (no fqdn), subdomains included")
 	}
 }
 
-func TestKatanaArgs_Defaults(t *testing.T) { // T2/T9
+func TestKatanaArgs_Defaults(t *testing.T) { // T2/T9 (default concurrency = 5)
 	a := KatanaArgs(Options{}, "l")
-	if !has(a, "-d 2", "-c 10") {
+	if !has(a, "-d 2", "-c 5") {
 		t.Fatalf("defaults: %v", a)
 	}
 }
 
 func TestHakrawlerArgs(t *testing.T) {
-	o := Options{Depth: 3, Concurrency: 7, Subs: true, Insecure: true, Proxy: "http://p", Headers: []string{"A: 1", "B: 2"}}
+	o := Options{Depth: 3, Concurrency: 7, Insecure: true, Proxy: "http://p", Headers: []string{"A: 1", "B: 2"}}
 	a := HakrawlerArgs(o)
 	if !has(a, "-d 3", "-t 7", "-subs", "-insecure", "-proxy http://p") {
 		t.Fatalf("hakrawler: %v", a)

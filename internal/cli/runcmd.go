@@ -79,10 +79,17 @@ func dispatchRun(args []string, d Deps) int {
 		}
 	}
 
+	// follow -d redirects and add the landing host(s) to the target set
+	// (so `-d bmw.com`, which bounces to www.bmw.in, crawls bmw.in too).
+	if len(urlForms) > 0 && !*f.noRedirect {
+		urlForms, hostForms = expandRedirects(urlForms)
+	}
+
 	opts := source.Options{
-		Depth: *f.depth, Subs: *f.subs, Rate: *f.rate, Concurrency: *f.conc,
+		Depth: *f.depth, Exact: *f.exact, Rate: *f.rate, Concurrency: *f.conc,
 		Headless: *f.headless, Proxy: *f.proxy, Headers: []string(f.headers),
-		Insecure: *f.insecure || *f.kAlias, UrlscanKey: config.ResolveKey(*f.uKey),
+		UserAgent: BrowserUA,
+		Insecure:  *f.insecure || *f.kAlias, UrlscanKey: config.ResolveKey(*f.uKey),
 		UrlscanLimit: uLimit, Debug: *f.debug,
 	}
 
@@ -203,7 +210,8 @@ func scanLines(r io.Reader) []string {
 type runFlags struct {
 	lPath, dArg, oPath, proxy, uKey  *string
 	silent, debug, subs, headless    *bool
-	insecure, kAlias, inScope        *bool
+	exact, insecure, kAlias, inScope *bool
+	noRedirect                       *bool
 	depth, conc, rate, uLimit        *int
 	timeout                          *time.Duration
 	headers                          multiFlag
@@ -218,14 +226,16 @@ func bindFlags(fs *flagSet) *runFlags {
 	f.uKey = fs.String("urlscan-key", "")
 	f.silent = fs.Bool("silent")
 	f.debug = fs.Bool("debug")
-	f.subs = fs.Bool("subs")
+	f.subs = fs.Bool("subs")   // accepted for compatibility; subdomains are on by default
+	f.exact = fs.Bool("exact") // restrict to the exact host
 	f.headless = fs.Bool("headless")
 	f.insecure = fs.Bool("insecure")
 	f.kAlias = fs.Bool("k")
 	f.inScope = fs.Bool("in-scope")
+	f.noRedirect = fs.Bool("no-redirect")
 	f.depth = fs.Int("depth", 2)
-	f.conc = fs.Int("c", 10)
-	f.rate = fs.Int("rate", 0)
+	f.conc = fs.Int("c", 5)
+	f.rate = fs.Int("rate", 100)
 	f.uLimit = fs.Int("urlscan-limit", 0)
 	f.timeout = fs.Duration("timeout", 10*time.Minute)
 	fs.set.Var(&f.headers, "H", "")

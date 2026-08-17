@@ -56,9 +56,10 @@ func TestT20_UnsupportedSkip(t *testing.T) {
 	}
 }
 
-func TestHeadless_HL1(t *testing.T) { // HL1: --headless -> katana -hl
-	if !has(KatanaArgs(Options{Headless: true}, "l"), "-hl") {
-		t.Fatal("HL1")
+func TestHeadless_HL1(t *testing.T) { // HL1: --headless -> katana -hl + -nos (root)
+	a := KatanaArgs(Options{Headless: true}, "l")
+	if !has(a, "-hl") || !has(a, "-nos") {
+		t.Fatalf("HL1: headless needs -hl and -nos, got %v", a)
 	}
 }
 
@@ -227,3 +228,30 @@ func TestDB13_SuccessNoReason(t *testing.T) {
 type errBoom struct{}
 
 func (errBoom) Error() string { return "boom" }
+
+// ---- default User-Agent injection ----
+func TestUA_Injected(t *testing.T) {
+	o := Options{UserAgent: "TestUA"}
+	if !has(KatanaArgs(o, "l"), "User-Agent: TestUA") {
+		t.Fatal("katana should carry default UA header")
+	}
+	if !has(GetjsArgs(o, "l"), "User-Agent: TestUA") {
+		t.Fatal("getjs should carry default UA header")
+	}
+	if !has(HakrawlerArgs(o), "User-Agent: TestUA") {
+		t.Fatal("hakrawler should carry default UA")
+	}
+	if !has(SubjsArgs(o, "l"), "-ua TestUA") {
+		t.Fatal("subjs should carry -ua")
+	}
+}
+
+func TestUA_UserHeaderWins(t *testing.T) {
+	o := Options{UserAgent: "Default", Headers: []string{"User-Agent: Custom"}}
+	if has(KatanaArgs(o, "l"), "User-Agent: Default") {
+		t.Fatal("must not inject default UA when user set one")
+	}
+	if !has(SubjsArgs(o, "l"), "-ua Custom") {
+		t.Fatal("subjs should use the user's UA value")
+	}
+}

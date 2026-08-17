@@ -128,9 +128,9 @@ INPUT / OUTPUT
 
 CRAWL CONTROL  (katana + hakrawler)
   --depth <n>         crawl depth (default: 2)
-  --subs              include subdomains in crawl scope
-  --rate <n>          max requests/sec (katana)
-  -c <n>              concurrency / threads (default: 10)
+  --exact             restrict to the exact host (default: crawl subdomains)
+  --rate <n>          max requests/sec, katana (default: 100)
+  -c <n>              concurrency / threads (default: 5)
   --headless          katana browser mode (catches JS-rendered links)
 
 REQUEST CONTROL

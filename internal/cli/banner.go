@@ -27,10 +27,10 @@ const Help = Banner + `
    -timeout <dur>     per-tool timeout        (default: 10m)
 
  CRAWL CONTROL  (katana + hakrawler)
-   --depth <n>        crawl depth            (default: 2)
-   --subs             include subdomains in crawl scope
-   --rate <n>         max requests/sec       (katana only)
-   -c <n>             concurrency / threads  (default: 10)
+   --depth <n>        crawl depth                  (default: 2)
+   --exact            restrict to the exact host   (default: crawl subdomains)
+   --rate <n>         max requests/sec, katana     (default: 100)
+   -c <n>             concurrency / threads        (default: 5)
    --headless         katana browser mode - catches JS-rendered links (slow)
 
  REQUEST CONTROL
