@@ -1,0 +1,182 @@
+====================================================================
+ SETUP PLAN  (fetch -setup)   -- JS collector
+====================================================================
+ Installs the 4 JS-finding tools. ALL are `go install` (no python/pipx).
+ Pattern copied from subhound/install.go (user's own tool, the good one).
+
+ LOCKED per user:
+   - install to the DEFAULT go install dir (~/go/bin), nothing fancy
+   - do NOT copy binaries to /usr/local/bin  (we did that before - not now)
+   - do NOT change GOPATH / GOBIN
+   - just prepend gobin to PATH inside the process (subhound way)
+--------------------------------------------------------------------
+
+
+1. TOOLS
+--------------------------------------------------------------------
+   tool       go module (@latest)                              verify flag
+   subjs      github.com/lc/subjs                              -h
+   getJS      github.com/003random/getJS                       -h
+   katana     github.com/projectdiscovery/katana/cmd/katana    -version
+   hakrawler  github.com/hakluke/hakrawler                     -h
+   (BOTH the module paths AND the verify flags above are BEST-GUESS -
+    confirmed/corrected in the VM at build time. getJS may be a /v2 module;
+    a tool that has no -h/-version is verified by "does it run at all".
+    rule: verify, never assume.)
+
+ None is hard-required: source S1 (internal .js grep) works with zero tools.
+ So -setup installs all 4 but a failure of one does not abort the others.
+
+
+2. subhound PATTERN WE FOLLOW  (install.go)
+--------------------------------------------------------------------
+   goBinDir()   -> GOBIN if set, else GOPATH/bin, else ~/go/bin
+   PATH prepend -> put gobin at front of process PATH at setup start,
+                   so a tool installed this run resolves immediately after
+   resolveCmd() -> look in gobin dir FIRST, then system PATH
+   verifyCmd()  -> actually RUN the tool (verify flag). "runs" = valid,
+                   even if it exits non-zero (many tools exit !=0 on -h).
+                   This rejects a wrong same-named binary (e.g. Kali's
+                   python httpx problem subhound documents).
+   go install   -> run with CGO_ENABLED=0
+   skip-if-installed, collect failures, report all at the end.
+
+
+3. STEPS
+--------------------------------------------------------------------
+   1. platform check: GOOS must be linux or darwin, else error + exit 1
+      (no windows - matches the whole project)
+   2. go sanity check: `go` must be on PATH. It IS - you built fetch with go,
+      so go is already installed. If somehow missing -> one-line error + exit 1.
+      NO ensureGo, NO auto-install of Go (pointless: fetch itself needs go).
+   3. gobin = goBinDir(); prepend gobin to process PATH
+   4. for each tool:
+        - resolveCmd finds it?  -> SKIP (already installed), record skipped
+        - else: `go install <module>@latest`  (CGO_ENABLED=0)
+                then verifyCmd -> ok? record installed : record failed
+   5. report:
+        installed: ...    skipped: ...    failed: ...
+        if gobin is NOT on the user's shell PATH ->
+           print:  export PATH="$PATH:<gobin>"
+   6. exit 0 if nothing failed, else 1
+
+
+4. fetch -config   (store the urlscan api key)
+--------------------------------------------------------------------
+   Separate command from -setup. Stores the urlscan.io API key so source
+   S6 gets higher rate limits. Only ONE key for now (urlscan).
+
+   Config file: ~/.config/fetch/config   (simple KEY=VALUE line)
+                key line: URLSCAN_API_KEY=<key>
+   Perms: file 0600, dir 0700  (it holds a secret).
+
+   Modes:
+     interactive:  `fetch -config`  -> prompt "urlscan api key (Enter to skip):"
+                   -> write it, masked when echoed back
+     flag:         `fetch -config --urlscan-key <k>`  -> write without prompt
+   Write is ATOMIC (temp file + rename) so Ctrl-C can't corrupt it.
+   Preserves any other lines already in the file (line-based edit).
+
+   Key lookup order at run time (source S6):
+       --urlscan-key flag  >  URLSCAN_API_KEY env  >  config file  >  keyless
+
+
+5. NOT DOING  (per user + scope)
+--------------------------------------------------------------------
+   - no /usr/local/bin copy, no GOPATH edit  (explicit user call)
+   - no python / pipx  (no waymore in this tool)
+   - no ensureGo / Go auto-install (fetch itself needs go, so go is present)
+   - no -y flag, no confirm prompt  (typing -setup = consent)
+   - no --check mode
+   - never auto-run setup; only on explicit `fetch -setup`.
+     if a source's tool is missing at run time -> skip it + note
+     "run fetch -setup", never crash.
+   - config stores ONLY the urlscan key (the only source that takes one).
+
+
+====================================================================
+ TEST CASES  (setup)
+====================================================================
+
+ G. goBinDir + PATH
+--------------------------------------------------------------------
+ G1  GOBIN set                 -> gobin == $GOBIN
+ G2  GOBIN empty, GOPATH set   -> gobin == $GOPATH/bin
+ G3  GOBIN + GOPATH both empty -> gobin == ~/go/bin
+ G4  setup start               -> gobin is prepended to process PATH
+ G5  gobin already on PATH     -> not added twice; no export note at end
+ G6  gobin NOT on shell PATH   -> export-PATH note printed at end
+ G7  GOPATH multi-entry (a:b)  -> use FIRST entry -> a/bin
+ G8  HOME unset, GOPATH unset  -> handled (error or best-effort, no panic)
+ G9  gobin dir does not exist  -> go install creates it; resolve still works
+ G10 gobin path contains space -> handled/quoted, no arg splitting
+
+ R. resolve + verify
+--------------------------------------------------------------------
+ R1  tool in gobin dir         -> resolved (skip install)
+ R2  tool only on PATH         -> resolved
+ R3  tool absent both places   -> not resolved -> install attempted
+ R4  wrong same-named binary (verify fails to run) -> NOT the tool -> install
+ R5  verify runs, exit 0       -> valid
+ R6  verify runs, exit != 0    -> STILL valid (ran = exists)
+ R7  verify: binary not found  -> invalid
+ R8  tool in BOTH gobin+PATH   -> gobin copy preferred (resolve order)
+ R9  binary present but not executable (perms) -> invalid -> install attempted
+ R10 verify hangs              -> bounded (timeout) -> treated invalid, no stall
+ R11 verify exit 0 but empty output -> valid (ran = exists)
+
+ I. install flow  (install/resolve funcs injected - no real network)
+--------------------------------------------------------------------
+ I1  GOOS=windows              -> error, exit 1, installs nothing
+ I2  GOOS other than linux/darwin (freebsd) -> error, exit 1
+ I3  go missing (unlikely)     -> one-line error, exit 1 (no auto-install)
+ I4  all 4 absent              -> installs all 4 ; report installed=4
+ I5  all 4 present             -> skips all 4 ; report skipped=4
+ I6  2 present + 2 absent      -> skipped=2, installed=2
+ I7  go install fails for one  -> that one in failed[]; others still done; exit 1
+ I8  installs but verify fails -> failed[] with note; others unaffected
+ I9  every tool installs+verifies -> exit 0
+ I10 -setup with no prompt     -> installs immediately (consent = typing it)
+ I11 -setup run twice          -> second run all skipped (idempotent)
+ I12 CGO_ENABLED=0 set on go install command
+ I13 install uses <module>@latest for each tool (exact pinning not used)
+ I14 multiple failures          -> all listed in failed[]; exit 1
+
+ E. structure / testability
+--------------------------------------------------------------------
+ E1  install func is injectable (fake) so tests never hit the network
+ E2  resolve/verify func is injectable
+ E3  report format stable: installed/skipped/failed lines, empty ones omitted
+ E4  order deterministic (tools processed in fixed order)
+ E5  report to stdout, errors/notes to stderr
+ E6  exit code: 0 all ok, 1 if any tool failed
+
+ C. config  (fetch -config)
+--------------------------------------------------------------------
+ -- write --
+ C1  --urlscan-key K given      -> URLSCAN_API_KEY=K written to config
+ C2  interactive, key typed     -> written
+ C3  interactive, Enter (empty) -> nothing changed (old key kept)
+ C4  config file absent         -> created
+ C5  config dir absent          -> created with 0700
+ C6  config file perms          -> 0600
+ C7  atomic write               -> temp + rename; Ctrl-C mid-write = no corruption
+ C8  pre-existing other lines   -> preserved (only key line added/changed)
+ C9  key already set            -> updated in place, NOT duplicated
+ C10 commented line #URLSCAN_API_KEY= -> uncommented + set
+ C11 --urlscan-key "" (empty)   -> treated as skip; no write (or clear note)
+ C12 key with surrounding spaces-> trimmed before store
+ C13 key echoed back            -> MASKED (only last 4 shown)
+ C14 malformed/garbage existing file -> preserved; key still set; no crash
+ C15 config file unwritable     -> clear error, exit 1
+ -- read (lookup order) --
+ C16 flag set + env set         -> FLAG wins
+ C17 env set + config set       -> ENV wins
+ C18 only config set            -> config value used
+ C19 nothing set                -> keyless
+ C20 config missing at read     -> keyless, no crash
+ C21 config present, no key line-> keyless
+ C22 interactive skip + NO existing file -> nothing created (no empty file)
+
+ Count: 10 (G) + 11 (R) + 14 (I) + 6 (E) + 22 (C) = 63 setup test cases.
+====================================================================

@@ -1,0 +1,96 @@
+====================================================================
+ STRUCTURE PLAN  (fetch - js collector)
+====================================================================
+ Small tool. Lean packages, each with ONE job, each testable via
+ injected funcs (no real network/tools in unit tests). This maps 1:1
+ to the test groups in JS_PLAN.txt + SETUP_PLAN.txt.
+--------------------------------------------------------------------
+
+
+1. LAYOUT
+--------------------------------------------------------------------
+ fetch/
+   go.mod                module github.com/mehulgupta1/fetch, go 1.25
+   main.go               tiny entry -> cli.Run(os.Args[1:], deps)
+   docs/                 the plans (JS_PLAN, SETUP_PLAN, BANNER, STRUCTURE)
+   internal/
+     jsfilter/           the CORE logic - url -> isJS, dedup, sort, in-scope
+       jsfilter.go       IsJS(), Dedup(), InScope(host, targets)
+       jsfilter_test.go  (groups A filter, B dedup, P in-scope)
+     source/             the 6 sources + arg-building + injectable exec
+       source.go         Source type, grep(S1), tool runners, urlscan(S6);
+                         feeds -d per tool (stdin/-list/loop, group IN);
+                         exec.CommandContext (kills children on cancel, RB);
+                         big-buffer line reader (>64KB safe, group LR);
+                         captures per-tool stderr -> failure reason (group DB)
+       args.go           Options struct + BuildArgs per tool (flag->argv);
+                         -H splits on first colon (T21)
+       urlscan.go        urlscan.io client (http, injectable): loop hosts ->
+                         search -> cap N/host -> detail -> .js; 429 retry (UR,UL,IN)
+       source_test.go    (T translation, UR retry, UL depth, DB reason, IN, LR)
+       integration_test.go  //go:build integration - real e2e smoke test (IT)
+     run/                orchestration - pick sources, run parallel, merge
+       run.go            Config, Run(): select -> parallel -> filter -> dedup
+       progress.go       live start/done/skip/fail + ~15s heartbeat, to stderr
+                         (group PR; per-source live counter; off if --silent).
+                         --debug adds full stderr + internal decisions (DB)
+       report.go         final report (3c): per-source + found->unique + saved
+                         + in-scope drop; to stderr; skipped if --silent
+       output.go         ATOMIC write (temp+rename) -o file; --silent ->
+                         also urls to stdout (groups SL, RB)
+       run_test.go       (group C orchestration + SL silent + PR progress)
+     resolve/            gobin dir + resolve + verify (subhound pattern)
+       resolve.go        goBinDir(), Resolve(), Verify()
+       resolve_test.go   (setup groups G, R)
+     setup/              install the 4 tools, report
+       setup.go          Run(tools, deps): skip/install/verify, collect fails
+       setup_test.go     (setup group I, E)
+     config/             urlscan key read + write
+       config.go         Load()/lookup order, WriteKey() atomic 0600
+       config_test.go    (setup group C config)
+     cli/                flag parse + dispatch + banner/help/version + stdin
+       cli.go            Run(): dispatch (help/version/setup/config vs run,
+                         group CL), parse, validate, read stdin, normalize -d
+                         (scheme prefix -> URL + HOST forms, group DN)
+       banner.go         Banner const, Version, help text
+       cli_test.go       (dispatch CL, validation V, stdin ST, -d norm DN, O1..O4)
+
+
+2. WHO CALLS WHO
+--------------------------------------------------------------------
+   main -> cli.Run
+             -> (run)     run.Run  -> source.* (each) -> jsfilter -> write
+             -> (-setup)  setup.Run -> resolve.* (skip/verify)
+             -> (-config) config.WriteKey
+             -> (-h/-v)   banner / resolve.Verify for versions
+   source.urlscan reads the key via config.Load (lookup order).
+
+
+3. KEY INTERFACES  (for testing - inject fakes)
+--------------------------------------------------------------------
+   source.Exec    - runs an external tool, returns its stdout lines.
+                    real impl = exec.Command; test impl = canned output.
+   source.HTTP    - urlscan http getter (real = http.Client; test = fake json).
+   setup.Deps     - { IsInstalled(tool), Install(tool) } injected.
+   resolve funcs  - LookPath / run-verify injectable.
+   cli.Deps       - { Stdout, Stderr, Stdin, Env, NewSource, ... } injected.
+   -> every unit test runs with NO real network and NO real tools.
+
+
+4. WHAT IS NOT A PACKAGE (kept simple, per ponytail)
+--------------------------------------------------------------------
+   - no separate "banner" package (it is one const in cli)
+   - no lock / state / resume packages (list-only tool, nothing to resume)
+   - no daterange / estimate / monitor / count (all were URL-tool only)
+   - the two bits of REAL logic (heaviest tested): jsfilter (isJS/dedup/
+     in-scope) and source/args.go (flag->argv). everything else is glue.
+   Total: 7 small internal packages + main.go. Grows only if -dl/-mine added.
+
+
+5. BUILD / TEST  (inside Kali VM - see memory reference-kali-build-test-workflow)
+--------------------------------------------------------------------
+   build:  go build -o fetch .
+   test:   go test ./...            (302 unit cases: JS_PLAN 239 + SETUP 63)
+   race:   go test -race -count=1 ./...
+   smoke:  go test -tags integration ./...   (6 real e2e cases, run in Kali)
+====================================================================

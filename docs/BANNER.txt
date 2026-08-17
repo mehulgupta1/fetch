@@ -1,0 +1,89 @@
+====================================================================
+ BANNER + FLAGS  (fetch)
+====================================================================
+ Printed on: bare `fetch`, `fetch -h`, `fetch --help`.
+ Font: figlet "ANSI Shadow" (UTF-8 box chars). Keep it stable.
+--------------------------------------------------------------------
+
+
+1. BANNER
+
+   ███████╗███████╗████████╗ ██████╗██╗  ██╗
+   ██╔════╝██╔════╝╚══██╔══╝██╔════╝██║  ██║
+   █████╗  █████╗     ██║   ██║     ███████║
+   ██╔══╝  ██╔══╝     ██║   ██║     ██╔══██║
+   ██║     ███████╗   ██║   ╚██████╗██║  ██║
+   ╚═╝     ╚══════╝   ╚═╝    ╚═════╝╚═╝  ╚═╝
+   js file collector · 6 sources · one clean list      v0.1.0
+   ─────────────────────────────────────────────────────────
+
+
+2. FLAG LIST  (grouped by feature, printed under the banner)
+--------------------------------------------------------------------
+
+ INPUT / OUTPUT
+   -l <file|->        url list. feeds grep only. "-" or piped stdin = read stdin
+   -d <file|domain>   target(s): a file of domains OR one domain.
+                      feeds subjs + getJS + katana + hakrawler + urlscan
+   -o <file>          output file            (default: js.txt)
+   --silent           no banner/report; urls to stdout (for automation)
+   --debug            verbose: full tool stderr + internal decisions
+   -timeout <dur>     per-tool timeout        (default: 10m)
+
+ CRAWL CONTROL  (katana + hakrawler)
+   --depth <n>        crawl depth            (default: 2)
+   --subs             include subdomains in crawl scope
+   --rate <n>         max requests/sec       (katana only)
+   -c <n>             concurrency / threads  (default: 10)
+   --headless         katana browser mode - catches JS-rendered links (slow)
+
+ REQUEST CONTROL
+   --proxy <url>      route through a proxy (e.g. Burp)
+   -H "K: V"          add request header (repeatable) - authed crawling
+   -k, --insecure     skip TLS certificate verification
+
+ URLSCAN (source S6)
+   --urlscan-key <k>  urlscan api key (else URLSCAN_API_KEY env, else config)
+   --urlscan-limit <n> newest recordings to open (default 20 / 100 with key)
+
+ CLEANING
+   --in-scope         drop JS outside the -d target scope (needs -d)
+
+ COMMANDS
+   -setup             install the 4 tools (subjs, getJS, katana, hakrawler)
+   -config            store the urlscan api key
+   -h, --help         show this help
+   --version          show version (fetch + detected tool versions)
+
+ [reserved for later: -dl download js, -mine extract endpoints, --new monitor]
+
+
+3. USAGE EXAMPLES  (shown at bottom of help)
+--------------------------------------------------------------------
+   # from an existing url list
+   fetch -l urls.txt -o js.txt
+
+   # crawl + urlscan a set of domains
+   fetch -d subs.txt
+
+   # everything: list sources + crawl + urlscan
+   fetch -l urls.txt -d subs.txt
+
+   # one domain, no file
+   fetch -d example.com
+
+   # piped in, piped out (automation)
+   cat urls.txt | fetch -d example.com --silent | nuclei
+
+   # first-time setup + key
+   fetch -setup
+   fetch -config
+
+
+4. RULES
+--------------------------------------------------------------------
+   - bare `fetch` (no args) prints banner + help, exit 0
+   - banner goes to STDERR so stdout stays clean for piping urls
+   - --version prints fetch version + resolved subjs/getJS/katana/
+     hakrawler versions (via the resolver), missing ones marked "not found"
+====================================================================

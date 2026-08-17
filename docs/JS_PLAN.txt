@@ -1,0 +1,717 @@
+====================================================================
+ JS COLLECTOR - PLAN + TEST CASES
+====================================================================
+ Tool: fetch (module github.com/mehulgupta1/fetch)  [name can change later]
+ Goal: collect all JS file URLs for a target, from many sources,
+       merge into ONE clean list. No downloading (list only).
+ Decisions locked:
+   - OUTPUT   = list only  -> js.txt (JS urls, one per line)
+   - CLEANING = loose      -> keep any .js url, drop only exact dupes
+--------------------------------------------------------------------
+
+
+1. THE 6 SOURCES
+--------------------------------------------------------------------
+ From the URL LIST (-l urls.txt) - "I already have urls, just pull the js":
+   S1  internal grep   - keep lines whose url path ends in .js (instant, free)
+
+ From the DOMAINS (-d domains) - "here are my live hosts, go find their js":
+   S2  subjs           - fetch each domain, scrape <script src> out of the html
+   S3  getJS           - same idea as subjs (different tool, more coverage)
+   S4  katana          - crawl the site, follow links, emit urls
+   S5  hakrawler       - crawl the site, emit urls (reads targets on stdin)
+   S6  urlscan.io      - passive cloud. two-step: (1) SEARCH q=domain:HOST ->
+                         a list of scan recordings; (2) open the newest N
+                         recordings and read their loaded resources
+                         (data.requests[]), keep the .js. NO crawling.
+                         finds js the crawlers never saw.
+                         N = --urlscan-limit (default 20 keyless / 100 with key)
+                         - caps the detail calls so we don't get 429-banned.
+                         same-domain recordings mostly repeat the same js, so
+                         a modest N still catches ~everything.
+                         key: --urlscan-key > URLSCAN_API_KEY env > config file.
+                         (exact json field names confirmed in the VM at build)
+                         NOTE: search returns ~100 results/page; N>100 (or 0=no
+                         cap) needs PAGING (search_after cursor). if paging isn't
+                         built, N is effectively capped at one page (100) and
+                         that's documented - not a silent surprise.
+
+ KEY POINT: subjs/getJS take the DOMAIN list (small), NOT the big urls.txt.
+   each domain = one page fetch. so no 50k-request blowup.
+
+ S4/S5/S6 emit ALL urls -> we keep only the .js ones with the same filter as S1.
+ S2/S3 already emit js -> still passed through the filter (harmless, consistent).
+
+ Honest note: several overlap. subjs~getJS do the same job; katana~hakrawler
+ both crawl. urlscan(S6) is the one truly different angle (passive/cloud).
+ Running all = more coverage, diminishing returns, more runtime.
+ The MERGE + DEDUP step is what makes the noise into one clean list.
+
+
+2. INPUTS / FLAGS
+--------------------------------------------------------------------
+ INPUT / OUTPUT
+   -l <file|->      url list. feeds S1 (grep) only. "-" = read stdin.
+                    also: if -l is omitted but data is PIPED on stdin,
+                    stdin is read as the url list (cat urls.txt | fetch).
+   -d <file|domain> target(s). a FILE of domains (one per line)
+                    OR a single domain string.
+                    feeds S2 subjs, S3 getJS, S4 katana, S5 hakrawler, S6 urlscan.
+   -o <file>        output file. default: js.txt
+   --silent         no banner, no report; print urls to STDOUT (automation).
+                    errors still go to stderr. (-o still also writes a file.)
+   --debug          verbose: full tool stderr + internal decisions (to stderr).
+                    overrides --silent for the debug stream (stdout stays urls).
+   -timeout <dur>   per-tool timeout (crawlers can hang). default 10m.
+
+ CRAWL CONTROL  (affect S4 katana + S5 hakrawler)
+   --depth N        how deep to crawl.            default 2
+   --subs           include subdomains in crawl scope (else exact host only)
+   --rate N         max requests/sec (katana only; hakrawler has no limiter)
+   -c N             concurrency / threads.        default 10
+   --headless       katana browser mode - catches JS-rendered links (SPA).
+                    slow; katana only.
+
+ REQUEST CONTROL  (affect crawlers + subjs/getJS + urlscan where supported)
+   --proxy URL      route traffic through a proxy (e.g. Burp)
+   -H "K: V"        add a request header (repeatable) - for authed crawling
+   -k, --insecure   skip TLS certificate verification
+
+ URLSCAN (S6)
+   --urlscan-key K  urlscan api key (else URLSCAN_API_KEY env, else config).
+   --urlscan-limit N how many newest recordings to open. default 20 (keyless)
+                    / 100 (with key). 0 = no cap (fetch all; slower, 429 risk).
+
+ CLEANING
+   --in-scope       drop JS whose host is OUTSIDE the -d target scope
+                    (e.g. cdn.jsdelivr.net). OFF by default (loose keeps all).
+                    requires -d (it defines the scope).
+
+ Rules:
+   - must pass at least one of -l / -d / piped-stdin, else usage error + exit 1.
+   - -d resolution:
+       - existing file                         -> read as a domain list
+       - looks like a file (ends .txt/.list, or has "/") but MISSING -> ERROR
+       - otherwise                             -> treat as one domain string
+     (guard stops a typo'd file path silently becoming a bogus "domain".)
+   - each -d entry is SCHEME-NORMALIZED before use (see 2c).
+   - give both -l and -d -> all 6 sources run.
+   - STDIN: if -l is omitted AND stdin is a pipe -> read stdin as the url list.
+     "-l -" forces stdin. if -l file is given, stdin is ignored.
+     NEVER block on stdin when it is a terminal (tty, no pipe).
+   - OUTPUT streams: banner + report always go to STDERR (stdout stays clean
+     for pipes). urls go to the -o file (default js.txt). --silent adds urls
+     to STDOUT and drops the banner + report.
+
+
+2b. FLAG -> TOOL TRANSLATION  (single source of truth)
+--------------------------------------------------------------------
+ fetch flag     katana        hakrawler     subjs    getJS    urlscan(ours)
+ --depth N      -d N          -d N          -        -        -
+ --subs         scope=rdn     -subs         -        -        (host scope)
+ (no --subs)    scope=fqdn    (default)     -        -        -
+ --rate N       -rl N         (unsup.)      -        -        our limiter (paces
+                                                              detail calls)
+ -c N           -c N          -t N          -c N     -t N     -
+ --headless     -hl           -             -        -        -
+ --proxy U      -proxy U      env           env      env      routes api call
+ -H "K: V"      -H            -H            -        -H       NO (api-key only)
+ -k/--insecure  best-effort   -insecure     -        -insecure NO (trusted host)
+ -timeout D     -timeout      -timeout      -t       -timeout our client
+ Notes:
+   - a flag the tool does NOT support is silently skipped for that tool
+     (e.g. --rate reaches only katana). document, never error on that.
+   - proxy for non-katana crawlers goes via HTTP_PROXY/HTTPS_PROXY env.
+   - urlscan is OUR call to the urlscan.io API (not a scan of the target):
+     -H and -k do NOT apply (it only sends its API-Key header to a trusted
+     https endpoint); --proxy just routes that api call (marginal).
+   - !! TOOL FLAG NAMES ABOVE ARE BEST-GUESS. exact flags (and getJS/subjs
+      input mode) are CONFIRMED/CORRECTED in the VM at build - rule: verify.
+
+
+2c. -d SCHEME NORMALIZATION  (crawlers need full urls)
+--------------------------------------------------------------------
+ Why: hakrawler (and subjs) need urls WITH a scheme (http(s)://), not a
+ bare "example.com". So each -d entry is normalized before feeding tools.
+
+ Rule, per -d entry (after trim; blank/# lines skipped):
+   - already has a scheme (matches "<scheme>://", case-insensitive)
+       -> pass AS-IS (http stays http; ftp stays ftp - we respect it)
+   - "//host" (scheme-relative)   -> "https://host"
+   - otherwise (bare domain)      -> prefix "https://"
+ The HOST is LOWERCASED (so "Example.com" and "example.com" dedup to one and
+ match in-scope consistently). scheme also lowercased.
+ Two forms derived and used downstream:
+   - URL  form (normalized) -> fed to subjs, getJS, katana, hakrawler
+   - HOST form (scheme+path stripped) -> used for urlscan query (q=domain:HOST)
+                                         and for --in-scope matching (sec 4b)
+ Normalize FIRST, then dedup the -d list (so "x.com" and "https://x.com"
+ collapse to one). http-fallback (trying http:// too) is a later add.
+
+
+2d. INPUT FEEDING  (how the -d list reaches each tool)
+--------------------------------------------------------------------
+ The normalized -d URL/HOST list is handed to each tool the way THAT tool
+ wants it (exact mechanism confirmed at build):
+   katana     -> -list <temp file of URL forms>   (temp file deleted after)
+   hakrawler  -> URL forms on STDIN
+   subjs      -> URL forms on STDIN  (or -i file)
+   getJS      -> URL forms via -i file (prefer its absolute-url flag so it
+                 emits full urls, not relative) (or stdin)
+   urlscan    -> LOOP over each HOST form; one search per host;
+                 --urlscan-limit cap is PER-HOST (N newest recordings each)
+ Header/proxy/insecure/etc. are added as per the 2b table.
+ -H splits on the FIRST ":" only (value may contain colons), key+val trimmed.
+
+ CONFIRMED REAL INVOCATIONS (verified in Kali at build - supersedes 2b guesses):
+   katana    -silent -list <tmp> -d <depth> -c <c> [-fs fqdn if !subs]
+             [-rl <rate>] [-hl] [-proxy U] [-H h]...      (stdout=urls)
+   hakrawler (urls on stdin) -d <depth> -t <c> -u [-subs] [-insecure]
+             [-proxy U] [-h "H1;;H2"]                     (headers ;;-joined)
+   subjs     -i <tmp> -c <c>            (NO headers/proxy/insecure support)
+   getJS     -input <tmp> -complete -threads <c> [-header H]...  (-complete=abs urls)
+   urlscan   OUR https GET (User-Agent + API-Key). result-detail API is
+             403 for ANONYMOUS - needs an api key to return js; keyless=0.
+   NOTE: our -timeout bounds each tool via CommandContext (kills it); we do
+   NOT pass -timeout to the tools (their own -timeout is per-request).
+   proxy: katana+hakrawler use -proxy flag; subjs+getJS use HTTP(S)_PROXY env.
+
+
+2e. COMMAND DISPATCH  (precedence - checked in this order)
+--------------------------------------------------------------------
+   1. -h / --help, OR zero args (with a tty stdin) -> banner+help, exit 0
+   2. --version                    -> fetch version + detected tool versions,
+                                      exit 0 (a missing tool shows "not found")
+   3. -setup                       -> install tools (SETUP_PLAN), then exit
+   4. -config                      -> save urlscan key, then exit
+   5. otherwise = a RUN. needs an input source (-l / -d / piped stdin).
+                                      NONE -> usage error to stderr, exit 1.
+ Notes:
+   - a command (1-4) BEATS run flags: `fetch -setup -d x` runs setup, ignores -d.
+   - unknown/unrecognized flag -> error + usage, exit 1.
+   - duplicate flag (e.g. --depth 2 --depth 3) -> LAST wins (go flag semantics).
+   - so: bare `fetch` = friendly help (exit 0); `fetch --depth 3` with no
+     input = misuse (exit 1). resolves the "bare vs no-input" question.
+
+
+3. FLOW
+--------------------------------------------------------------------
+   0. read inputs: -l file, or stdin if piped (see Rules); -d file/domain
+   1. work out which sources apply (from -l / -d / stdin given)
+   2. skip any source whose tool is not installed -> print a note, continue
+      (S1 has no tool, always runs when a url list is present)
+   3. run all applicable sources IN PARALLEL, each with its own timeout
+      (S6 urlscan: on HTTP 429, retry ONCE - honor Retry-After header,
+       else a default backoff - then give up with a "rate-limited" note)
+      (print LIVE PROGRESS to stderr while they run - see section 3b)
+   4. collect every output line from every source
+   5. FILTER: keep a line only if it is a JS url (see section 4)
+   6. SCOPE (only if --in-scope): drop JS whose host is outside -d scope (sec 4b)
+   7. DEDUP: exact-string unique (loose), then SORT
+   8. write urls -> -o file (default js.txt); if --silent, also print to STDOUT
+   9. final report to STDERR (see 3c), UNLESS --silent
+
+
+3b. PROGRESS / LIVE STATUS  (so you can SEE it working)
+--------------------------------------------------------------------
+ Goal: never a frozen screen. Show which source is running, what it has
+ so far, and when each finishes. ALL to STDERR (stdout stays urls-only).
+ Suppressed by --silent (same as banner/report).
+
+ Events (one line each, self-labeled so parallel interleave is fine):
+   [>]  <source> started
+   [-]  <source> skipped (reason: not installed)
+   [ok] <source> done: <N> js (<elapsed>)
+   [x]  <source> failed: <reason>
+
+ Heartbeat (every ~15s while any source still runs):
+   [..] <elapsed>   katana=812  hakrawler=233  subjs=done  urlscan=running
+   - per still-running source: LIVE count of urls seen so far
+     (we read tool stdout line-by-line, so we keep a running counter)
+   - finished sources shown as done/skip/fail; stops once ALL are done
+
+ Then the final report (section, step 9). --silent hides ALL of the above.
+ ponytail: plain line-per-event logging, NO spinner / ANSI redraw
+   (works when piped or redirected; a TTY spinner would be fragile).
+
+
+3c. FINAL REPORT  (printed on finish, to stderr)
+--------------------------------------------------------------------
+ Example:
+   -------- fetch done (52s) --------
+    sources
+      grep        18
+      subjs       42
+      getJS       39
+      katana      55
+      hakrawler   failed (timeout)
+      urlscan     12
+    found   166 js  ->  108 unique
+    in-scope drop   14
+    saved   js.txt
+   ----------------------------------
+
+ Lines:
+   - header      : "fetch done" + total elapsed
+   - sources     : each source's js count (its own .js, pre-merge);
+                   failed/skipped shown with reason
+   - found       : RAW total .js across all sources (before scope + dedup)
+                   -> UNIQUE = final count written (AFTER in-scope + dedup)
+   - in-scope drop: only if --in-scope used; how many removed by scope
+                    (removed between "found" and "unique")
+   - saved       : output path (js.txt or -o). omitted under --silent.
+   - all counts are REAL (never a bare "done") - rule: verify, no guessing.
+   - --silent hides the whole report (urls already on stdout).
+
+
+3d. EXIT CODES + RUNTIME NOTES
+--------------------------------------------------------------------
+ EXIT CODES (the run, not -setup):
+   0  -> at least one source RAN and output was written (even 0 urls found -
+         an empty result is still a valid result)
+   1  -> usage error / bad flag (validation), OR every source failed to run
+ MEMORY (big runs):
+   - filter to .js WHILE READING each tool's stdout - only .js urls go into
+     the dedup map, never the full url firehose. bounds RAM naturally.
+ LARGE LINES (data-loss guard):
+   - do NOT use a default bufio.Scanner (it silently drops lines >64KB, and
+     some archived urls ARE that long). use a big-buffer reader (>=1MB, grow
+     as needed); a line over the max is WARNED (named), never silently dropped.
+   - applies to reading -l/stdin AND every tool's stdout.
+   - trim handles CRLF (\r) so Windows-made url files are clean.
+ ATOMIC OUTPUT:
+   - write js.txt to a temp file then rename -> Ctrl-C/crash never leaves a
+     half-written or truncated js.txt.
+ CHILD PROCESSES:
+   - launch every tool with exec.CommandContext -> on -timeout OR Ctrl-C the
+     child crawlers are KILLED, no orphan processes left running.
+ HEADLESS (--headless):
+   - katana headless needs Chrome/Chromium installed. we just pass -hl;
+     if no browser, katana fails -> S4 fails GRACEFULLY (best-effort),
+     shown as failed in the report. never crashes the whole run.
+
+
+3e. FAILURE DIAGNOSTICS + --debug
+--------------------------------------------------------------------
+ Every external tool's STDERR is captured while it runs (separate buffer
+ per source, so parallel output never interleaves).
+
+ On a source FAILURE, a short reason is derived and shown (in the live
+ progress "[x] failed:" line AND the final report):
+   - timed out                 -> "timeout"
+   - exited non-zero, stderr    -> last non-empty stderr line
+   - exited non-zero, no stderr -> "exit code N"
+   - urlscan http error         -> status ("429 rate-limited", "403", ...)
+   - tool not installed         -> "not installed" (this is SKIPPED, not failed)
+
+ --debug (off by default):
+   - dumps each tool's FULL stderr
+   - prints internal decisions: sources selected, per-tool argv built,
+     -d normalization results, urlscan cap used
+   - all to STDERR; stdout stays urls-only
+   - --debug overrides --silent for the debug stream (debugging beats quiet)
+
+
+4. FILTER RULES  (loose)
+--------------------------------------------------------------------
+ A line is a JS url if:
+   - it parses as a url, AND
+   - its PATH (query and fragment ignored) ends in ".js" (case-insensitive)
+ Loose dedup:
+   - trim surrounding whitespace first
+   - exact string match only (NO normalizing host case, scheme, www, params)
+   - so app.js?v=1 and app.js?v=2 stay as TWO entries (cache-busters kept)
+ Not JS (dropped): .json, .mjs (future), .js.map (future), paths not ending .js,
+   empty/blank lines, unparseable garbage.
+
+
+4b. --in-scope FILTER  (optional, OFF by default)
+--------------------------------------------------------------------
+ Only runs if --in-scope is set. Uses the -d target domains as the scope.
+ Match uses the url's HOSTNAME (port stripped, lowercased). A JS url is
+ IN-SCOPE if that hostname either:
+   - equals a target HOST, OR
+   - ends with "." + a target HOST   (i.e. a subdomain of it)
+ Matched against ANY of the -d HOST forms. In-scope kept, rest dropped.
+ A url with NO host (relative "/app.js") CANNOT be scope-checked -> DROPPED
+   under --in-scope (kept when --in-scope is off).
+ NO publicsuffix / registrable-domain logic - plain literal suffix match
+   against exactly what -d listed (pass -d target.com to cover the root).
+ Requires -d: --in-scope without -d = error.
+ Examples (given -d target.com):
+   https://target.com/app.js         -> KEEP (equals)
+   https://api.target.com/a.js        -> KEEP (subdomain)
+   https://cdn.jsdelivr.net/x.js      -> DROP (out of scope)
+   https://nottarget.com/a.js         -> DROP
+   https://TARGET.com/a.js            -> KEEP (case-insensitive host)
+   https://eviltarget.com/a.js        -> DROP (not a real subdomain; needs the dot)
+
+
+5. NOT IN THIS BUILD (later, only if asked)
+--------------------------------------------------------------------
+   - downloading the .js file contents
+   - endpoint / secret extraction from inside the JS
+   - .mjs / .js.map buckets
+   - strict cleaning (cdn/library drop, cache-buster collapse)
+   - monitoring / --new
+ NOTE: -setup + -config ARE built (see SETUP_PLAN). At RUN time the tool
+ just uses whatever tools are installed and notes any that are missing
+ (never auto-installs on a run).
+
+
+6. FILES / PACKAGES  (full layout in STRUCTURE.txt)
+--------------------------------------------------------------------
+   tested logic lives in:
+   - jsfilter  : isJS + dedup + sort + in-scope host match  (groups A,B, in-scope)
+   - source    : builds each tool's argv from the flags (group T translation)
+   - run       : source selection + parallel + merge + report  (group C, V)
+
+
+====================================================================
+ TEST CASES
+====================================================================
+
+ A. FILTER  (isJS)   -- decide if ONE url is a js file
+--------------------------------------------------------------------
+ F1   https://t.com/app.js                 -> KEEP
+ F2   https://t.com/app.js?v=1             -> KEEP  (query ignored)
+ F3   https://t.com/app.js#frag            -> KEEP  (fragment ignored)
+ F4   https://t.com/a/b/app.min.js         -> KEEP
+ F5   https://t.com/data.json              -> DROP  (json, not js)
+ F6   https://t.com/app.js/                -> DROP  (path ends in /, not .js)
+ F7   https://t.com/APP.JS                 -> KEEP  (case-insensitive)
+ F8   https://t.com/                       -> DROP  (no file)
+ F9   https://t.com/jsstuff                -> DROP  (no .js suffix)
+ F10  garbage line with spaces             -> DROP  (unparseable)
+ F11  //cdn.x.com/app.js                   -> KEEP  (scheme-relative, path .js)
+ F12  /app.js                              -> KEEP  (relative path .js)
+ F13  (empty line)                         -> DROP
+ F14  https://t.com/app.js?file=x.css      -> KEEP  (path is .js; query css ignored)
+ F15  https://t.com/app.mjs                -> DROP  (mjs reserved for later)
+ F16  "  https://t.com/a.js  " (padded)    -> KEEP  (trimmed first)
+ F17  https://t.com/app.JS?x=1             -> KEEP  (case + query)
+ F18  https://t.com/.js                    -> KEEP  (dotfile named .js; loose keeps)
+ F19  https://t.com:8443/app.js            -> KEEP  (port ignored)
+ F20  HTTPS://t.com/a.js                   -> KEEP  (scheme case ignored)
+ F21  https://t.com/app%2Ejs               -> KEEP  (percent-decoded path = app.js)
+ F22  https://t.com/app.js.map             -> DROP  (sourcemap, ends .map)
+ F23  https://t.com/app.min.js.gz          -> DROP  (gzipped, ends .gz)
+ F24  https://t.com/page?redirect=/x.js    -> DROP  (.js is in QUERY not path)
+ F25  https://t.com/page#/x.js             -> DROP  (.js is in FRAGMENT not path)
+ F26  "app.js\t" (trailing tab)            -> KEEP  (whitespace trimmed)
+ F27  app.js  (no scheme, no host)         -> KEEP  (bare relative path .js)
+ F28  http://                              -> DROP  (no path)
+ F29  https://t.com/app.js%00.png (null)   -> DROP  (path does not end .js after decode)
+ F30  ftp://t.com/app.js                   -> KEEP  (scheme not restricted; path .js)
+ F31  https://t.com/appjs                  -> DROP  (no dot before js)
+ F32  https://t.com/a.js?x=/y.css#z.json   -> KEEP  (path .js; query+frag ignored)
+
+ B. DEDUP + SORT
+--------------------------------------------------------------------
+ D1   two identical urls                   -> collapse to ONE
+ D2   app.js?v=1 and app.js?v=2            -> stay as TWO (loose, cache-busters kept)
+ D3   HTTPS://T.com/a.js vs https://t.com/a.js -> TWO (loose, no normalize)
+ D4   mixed input                          -> output SORTED (deterministic ASCII)
+ D5   " a.js" and "a.js"                   -> ONE (whitespace trimmed before dedup)
+ D6   same url from 3 different sources    -> ONE (merge then dedup)
+ D7   app.js#a and app.js#b                -> TWO (loose; fragment part of string)
+ D8   1000s of urls, many dupes            -> map-based dedup, no O(n^2), stable out
+ D9   empty result set                     -> empty output, no crash
+ D10  only-whitespace lines mixed in       -> dropped, not counted as urls
+
+ C. ORCHESTRATION  (fake/injected exec, no real tools)
+--------------------------------------------------------------------
+ -- source selection --
+ O1   run intent, no -l/-d/stdin           -> usage error, exit 1 (see also CL9)
+ O2   -l only                              -> S1 (grep) only ; S2..S6 NOT
+ O3   -d only                              -> S2,S3,S4,S5,S6 run ; S1 NOT
+ O4   -l and -d                            -> all 6 sources run
+ -- input handling --
+ O5   -d single domain string             -> one domain, no file read
+ O6   -d existing file of domains         -> each line crawled
+ O7   -d file with blank lines/# comments -> those lines skipped
+ O8   -d file with duplicate domains      -> deduped before crawl
+ O9   -l file missing/unreadable          -> error, exit 1 (bad input)
+ O10  -l file with blank lines            -> skipped, no empty queries
+ O11  -d bare string (example.com), not a file -> treated as single domain
+ O11b -d looks like a file (subs.txt or a/b) but MISSING -> ERROR, exit 1 (guard)
+ -- tool presence / failure --
+ O12  subjs not installed                 -> S2 skipped+noted; others run; exit 0
+ O13  all external tools absent, -l given -> S1 still produces output
+ O14  all external tools absent, -d only  -> only S6(urlscan) can run; note others missing
+ O15  a tool exits non-zero               -> that source empty; others continue
+ O16  a tool hangs > -timeout             -> that source empty; others continue
+ O17  a tool prints log/banner to stdout  -> non-js lines dropped by filter (safe)
+ O18  tool writes to stderr only          -> we read stdout; stderr ignored for urls
+ -- urlscan (S6) --
+ O19  urlscan with api key                -> request sent WITH key header
+ O20  urlscan key from config file only   -> used (lookup order honored)
+ O21  urlscan no key anywhere             -> queries keyless; prints "limited" note
+ O22  urlscan api error / 429 rate-limit  -> S6 empty; other sources continue
+ O23  urlscan json parsed                 -> only .js resource urls kept
+ O24  urlscan returns nothing for domain  -> S6 empty; no crash
+ -- merge / output --
+ O25  same js url from 2 sources          -> appears ONCE (merge dedup)
+ O26  tool emits js + non-js mixed        -> only js kept in final
+ O27  every source empty                  -> js.txt empty; report says 0 found
+ O28  -o custom path                      -> written there; default js.txt
+ O29  -o dir does not exist               -> created (or clear error if cannot)
+ O30  -o path exists                      -> overwritten (not appended)
+ O31  parallel sources                    -> collected via channels; -race clean
+ O32  Ctrl-C mid-run                      -> aborts cleanly, no partial js.txt corruption
+ -- report --
+ O33  report                              -> per-source counts + final unique total
+ O34  report goes to stderr               -> stdout stays urls-only (pipe-friendly)
+
+ T. FLAG -> TOOL ARG TRANSLATION  (build argv, no exec; assert args)
+--------------------------------------------------------------------
+ -- depth --
+ T1   --depth 3                -> katana args have "-d 3" ; hakrawler "-d 3"
+ T2   no --depth (default)     -> both get "-d 2"
+ T3   --depth 0                -> passed through as 0 (tool's unlimited meaning)
+ -- subs / scope --
+ T4   --subs                   -> katana scope=rdn ; hakrawler has "-subs"
+ T5   no --subs                -> katana scope=fqdn ; hakrawler has NO "-subs"
+ -- rate --
+ T6   --rate 5                 -> katana has "-rl 5" ; hakrawler UNCHANGED (unsupported)
+ T7   no --rate                -> no "-rl" on katana
+ -- concurrency --
+ T8   -c 20                    -> katana "-c 20", hakrawler "-t 20", subjs "-c 20", getJS "-t 20"
+ T9   no -c (default)          -> all get concurrency 10
+ -- headless --
+ T10  --headless               -> katana has "-hl" ; other tools UNCHANGED
+ T11  no --headless            -> no "-hl"
+ -- proxy --
+ T12  --proxy http://127.0.0.1:8080 -> katana "-proxy ..." ; hakrawler/subjs/getJS
+                                       get HTTP_PROXY+HTTPS_PROXY env ; urlscan client uses it
+ T13  no --proxy               -> no proxy arg/env anywhere
+ -- headers --
+ T14  -H "A: 1"                -> katana "-H", hakrawler "-H", getJS "-H" ; subjs UNCHANGED
+ T15  -H repeated (2 headers)  -> all supported tools receive BOTH
+ T16  -H does NOT reach urlscan -> urlscan sends ONLY its api-key header
+ -- insecure --
+ T17  -k                       -> hakrawler "-insecure", getJS "-insecure" ;
+                                  urlscan UNAFFECTED (trusted https endpoint)
+ T18  no -k                    -> TLS verified everywhere
+ -- timeout --
+ T19  -timeout 30s             -> each tool gets its timeout form; ctx also bounded
+ -- unsupported flag skip --
+ T20  a flag unsupported by a tool -> silently omitted for THAT tool, never errors
+ -- header parsing --
+ T21  -H "Authorization: Bearer a:b:c" -> split on FIRST colon; value keeps "a:b:c"
+ T22  -H "  Key : val  "               -> key+value trimmed ("Key","val")
+
+ P. --in-scope FILTER  (given -d target.com unless noted)
+--------------------------------------------------------------------
+ P1   --in-scope, target.com/app.js         -> KEEP (equals)
+ P2   --in-scope, api.target.com/a.js        -> KEEP (subdomain)
+ P3   --in-scope, cdn.jsdelivr.net/x.js      -> DROP (out of scope)
+ P4   --in-scope, TARGET.com/a.js            -> KEEP (host case-insensitive)
+ P5   --in-scope, eviltarget.com/a.js        -> DROP (needs the dot, not a suffix trick)
+ P6   --in-scope, multiple -d domains        -> KEEP if host matches ANY
+ P7   --in-scope, -d is a file of domains    -> scope = all listed domains
+ P8   --in-scope WITHOUT -d                  -> error, exit 1
+ P9   NO --in-scope (default)                -> out-of-scope js KEPT (loose)
+ P10  --in-scope, -d api.target.com only     -> target.com root DROPPED (scope is exact list)
+ P11  --in-scope applied AFTER .js filter, BEFORE dedup (order)
+ P12  --in-scope, https://target.com:8443/app.js -> KEEP (port stripped for match)
+ P13  --in-scope, hostless url /app.js       -> DROP (no host to scope-check)
+ P14  --in-scope, //cdn.x.com/app.js         -> DROP (host cdn.x.com out of scope)
+
+ V. FLAG VALIDATION  (bad input rejected before any work)
+--------------------------------------------------------------------
+ V1   --depth negative          -> error, exit 1
+ V2   -c zero or negative       -> error, exit 1
+ V3   --rate negative           -> error, exit 1  (0 = allowed = no limit)
+ V4   --proxy not a valid url   -> error, exit 1
+ V5   -H without a colon        -> error, exit 1
+ V6   --in-scope without -d     -> error, exit 1  (also P8)
+ V7   --headless but katana not installed -> warn "headless needs katana", S4 skipped
+ V8   -timeout not a duration   -> error, exit 1
+ V9   validation runs BEFORE launching any source
+ V10  --urlscan-limit negative  -> error, exit 1  (0 = allowed = no cap)
+
+ ST. STDIN INPUT
+--------------------------------------------------------------------
+ ST1  piped stdin, no -l          -> stdin read as url list; S1 runs
+ ST2  -l file given + stdin piped -> -l file used; stdin IGNORED (documented)
+ ST3  -l -                        -> reads stdin explicitly
+ ST4  stdin piped + -d given      -> stdin feeds S1 ; -d feeds S2..S6
+ ST5  tty stdin (no pipe), no -l, no -d -> usage error; NEVER block on stdin
+ ST6  empty piped stdin, no -d    -> S1 empty; exit 0; no hang
+ ST7  stdin with blank/ws lines   -> those lines skipped
+ ST8  stdin detection             -> uses non-tty (ModeCharDevice) check
+
+ SL. --silent
+--------------------------------------------------------------------
+ SL1  --silent                    -> NO banner on stderr
+ SL2  --silent                    -> NO report on stderr
+ SL3  --silent                    -> urls printed to STDOUT, one per line, sorted
+ SL4  --silent + a tool fails     -> error note STILL goes to stderr (not hidden)
+ SL5  --silent + -o file          -> file ALSO written; stdout still has urls
+ SL6  --silent + empty result     -> empty stdout; exit 0; no crash
+ SL7  no --silent (default)       -> banner+report to stderr; urls to js.txt;
+                                     stdout empty
+ SL8  --silent output             -> deterministic (same sorted set as the file)
+
+ UR. URLSCAN 429 RETRY  (S6)
+--------------------------------------------------------------------
+ UR1  429 then 200                -> retried once; results returned
+ UR2  429 then 429                -> give up after one retry; S6 empty + note
+ UR3  429 with Retry-After header -> waits that many seconds (honored)
+ UR4  429 without Retry-After     -> default backoff used
+ UR5  200 on first try            -> NO retry, no delay
+ UR6  non-429 error (500/timeout) -> NOT retried; S6 empty (only 429 retries)
+ UR7  retry respects -timeout     -> won't exceed the source timeout budget
+ UR8  keyless vs with-key         -> retry logic identical either way
+
+ PR. LIVE PROGRESS  (section 3b)
+--------------------------------------------------------------------
+ PR1  each source                 -> prints a "started" line to stderr
+ PR2  source finishes             -> "done: N js (elapsed)" line
+ PR3  tool not installed          -> "skipped (reason)" line
+ PR4  source errors               -> "failed: reason" line
+ PR5  heartbeat every ~15s        -> snapshot line while any source runs
+ PR6  heartbeat                   -> shows LIVE url count per running source
+ PR7  all sources done            -> heartbeat stops (no more snapshots)
+ PR8  all progress on STDERR      -> stdout/urls + -o file unaffected
+ PR9  --silent                    -> ZERO progress output
+ PR10 progress counts             -> reconcile with final per-source report
+
+ RP. FINAL REPORT  (section 3c)
+--------------------------------------------------------------------
+ RP1  report header               -> shows "fetch done" + total elapsed
+ RP2  per-source counts           -> each source's js count listed
+ RP3  failed/skipped source       -> shown with reason (not silently omitted)
+ RP4  found line                  -> raw total -> unique (dedup) both shown
+ RP5  --in-scope used             -> "in-scope drop N" line present
+ RP6  no --in-scope               -> no in-scope-drop line
+ RP7  saved line                  -> shows output path (js.txt or -o)
+ RP8  --silent                    -> whole report suppressed
+
+ DN. -d SCHEME NORMALIZATION  (section 2c)
+--------------------------------------------------------------------
+ DN1  example.com            -> URL https://example.com ; HOST example.com
+ DN2  https://example.com    -> passed AS-IS
+ DN3  http://example.com     -> AS-IS (NOT upgraded to https)
+ DN4  HTTP://example.com     -> AS-IS (scheme detect case-insensitive)
+ DN5  example.com:8080       -> https://example.com:8080 ; HOST example.com
+ DN6  sub.example.com/path   -> https://sub.example.com/path ; HOST sub.example.com
+ DN7  //example.com          -> https://example.com (scheme-relative)
+ DN8  "  example.com  "      -> trimmed then https://example.com
+ DN9  blank / # comment line -> skipped
+ DN10 example.com AND https://example.com both listed -> dedup to ONE
+ DN11 ftp://example.com      -> AS-IS (explicit scheme respected)
+ DN12 urlscan+in-scope use HOST form (scheme/path stripped), tools use URL form
+ DN13 Example.com AND example.com -> host lowercased -> dedup to ONE
+
+ UL. URLSCAN DEPTH / CAP  (section S6, --urlscan-limit)
+--------------------------------------------------------------------
+ UL1  search returns > N results  -> only the N NEWEST are opened (cap honored)
+ UL2  search returns < N results  -> all are opened
+ UL3  --urlscan-limit 50          -> overrides the default
+ UL4  api key present, no flag    -> default cap = 100
+ UL5  keyless, no flag            -> default cap = 20
+ UL6  --urlscan-limit 0           -> no cap; open ALL results
+ UL7  recording detail parsed     -> .js pulled from data.requests[]
+ UL8  recording with no .js       -> contributes nothing; no crash
+ UL9  search returns 0 results    -> S6 empty; ZERO detail calls made
+ UL10 one detail fetch fails      -> that one skipped; others continue
+ UL11 --urlscan-limit > 100 / 0   -> pages search (search_after) OR is
+                                     documented-capped at one page (100)
+
+ EX. EXIT CODES  (the run)
+--------------------------------------------------------------------
+ EX1  >=1 source ran, output written (even 0 urls) -> exit 0
+ EX2  no -l / -d / stdin (usage error)             -> exit 1
+ EX3  a bad flag (validation error)                -> exit 1
+ EX4  EVERY source failed to run                   -> exit 1
+ EX5  some sources failed, some ok                 -> exit 0 (partial = success)
+ EX6  sources ran but 0 js found                   -> exit 0 (empty is valid)
+
+ ME. MEMORY / STREAMING
+--------------------------------------------------------------------
+ ME1  filter runs WHILE reading tool stdout        -> only .js kept in memory
+ ME2  huge non-js output firehose                  -> RAM bounded (js-only map)
+
+ HL. HEADLESS BROWSER
+--------------------------------------------------------------------
+ HL1  --headless, chrome present  -> katana runs headless (-hl)
+ HL2  --headless, NO browser      -> katana fails -> S4 failed in report;
+                                     run continues; exit 0 if others ok
+
+ DB. FAILURE DIAGNOSTICS + --debug  (section 3e)
+--------------------------------------------------------------------
+ DB1  tool exits non-zero, has stderr -> reason = last non-empty stderr line
+ DB2  tool times out                  -> reason = "timeout"
+ DB3  tool exits non-zero, no stderr  -> reason = "exit code N"
+ DB4  tool not installed              -> "not installed" (SKIPPED, not failed)
+ DB5  urlscan http error              -> reason = status ("429 rate-limited"...)
+ DB6  reason shown in BOTH progress line and final report
+ DB7  --debug                         -> full tool stderr dumped
+ DB8  --debug                         -> internal info (sources, argv, -d norm,
+                                         urlscan cap) printed
+ DB9  no --debug                      -> full stderr NOT printed (short reason only)
+ DB10 --debug output                  -> to STDERR; stdout/urls unaffected
+ DB11 --debug + --silent              -> debug STILL shows; stdout still urls-only
+ DB12 stderr captured per-source      -> parallel, no interleave corruption
+ DB13 successful source               -> no reason, no debug noise (unless --debug)
+
+ IN. INPUT FEEDING  (section 2d - how -d reaches each tool)
+--------------------------------------------------------------------
+ IN1  katana        -> fed via -list <temp file of URL forms>
+ IN2  hakrawler     -> fed URL forms on STDIN
+ IN3  subjs         -> fed URL forms on STDIN (or -i)   [mode verified at build]
+ IN4  getJS         -> fed URL forms via -i / stdin; absolute-url flag set
+ IN5  urlscan       -> LOOPS each HOST form; one search per host
+ IN6  --urlscan-limit cap is PER-HOST (N newest per domain, not total)
+ IN7  temp files created for a tool are DELETED after it finishes
+ IN8  multiple -d hosts -> crawlers get the full list; urlscan iterates all
+
+ LR. LARGE-LINE / ENCODING READING
+--------------------------------------------------------------------
+ LR1  url line > 64KB              -> NOT silently dropped (big-buffer reader)
+ LR2  line beyond the max buffer   -> WARNED (named source), not silent-dropped
+ LR3  CRLF (\r\n) in -l/-d file    -> \r trimmed; url clean
+ LR4  last line has no trailing \n -> still read
+ LR5  giant url line in tool stdout-> read fully (same reader)
+
+ RB. ROBUSTNESS  (write + shutdown)
+--------------------------------------------------------------------
+ RB1  output write is ATOMIC (temp+rename) -> Ctrl-C never leaves half js.txt
+ RB2  Ctrl-C / -timeout            -> child tool processes KILLED (no orphans)
+ RB3  -o temp file cleaned up if the write fails
+ RB4  single writer at end         -> no concurrent-write race on js.txt
+
+ CL. COMMAND DISPATCH / HELP / VERSION  (section 2e)
+--------------------------------------------------------------------
+ CL1  bare `fetch` (zero args, tty)   -> banner+help, exit 0
+ CL2  -h / --help                     -> help, exit 0
+ CL3  --version                       -> fetch version + tool versions, exit 0
+ CL4  --version, a tool missing       -> that tool shows "not found"; no crash
+ CL5  unknown flag (--nope)           -> error + usage, exit 1
+ CL6  -setup present                  -> setup path; collection NOT started
+ CL7  -config present                 -> config path; collection NOT started
+ CL8  command beats run flags (-setup -d x) -> setup runs; -d ignored
+ CL9  run flags but no input (--depth 3, no -l/-d/stdin) -> usage error, exit 1
+ CL10 duplicate flag (--depth 2 --depth 3)  -> LAST wins (go flag semantics)
+
+ IT. INTEGRATION SMOKE TEST  (gated: `go test -tags integration`, run in Kali)
+--------------------------------------------------------------------
+   One real end-to-end test with real tools + network. NOT run by the
+   default `go test ./...`. Validates real wiring the fakes cannot.
+ IT1  real run against example.com     -> js.txt is created
+ IT2  real output                      -> every line is a real .js url
+ IT3  real -l list (S1 grep)           -> pulls .js from a real url list
+ IT4  a real tool (katana) invoked     -> our argv actually works (no flag typo)
+ IT5  run finishes                     -> exit 0
+ IT6  gating                           -> excluded from normal `go test ./...`
+
+ Count (unit): 32 filter + 10 dedup + 35 orchestration + 22 translation
+        + 14 in-scope + 10 validation + 8 stdin + 8 silent + 8 urlscan-retry
+        + 10 progress + 8 report + 13 normalization + 11 urlscan-depth
+        + 6 exit-codes + 2 memory + 2 headless + 13 diagnostics
+        + 8 input-feeding + 5 large-line + 4 robustness + 10 dispatch
+        = 239 unit cases.
+ Plus 6 gated integration cases (IT) = 245 total in JS_PLAN.
+====================================================================

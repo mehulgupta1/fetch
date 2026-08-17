@@ -1,0 +1,16 @@
+# compiled binary
+/fetch
+fetch
+*.exe
+
+# run output
+js.txt
+*.tmp
+
+# local tooling / editor
+.claude/
+.vscode/
+.idea/
+
+# os
+.DS_Store
