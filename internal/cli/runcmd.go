@@ -96,8 +96,8 @@ func dispatchRun(args []string, d Deps) int {
 	r := resolve.New()
 	cfg := run.Config{
 		GrepLines: grepLines, URLForms: urlForms, HostForms: hostForms,
-		Opts: opts, InScope: *f.inScope, Timeout: *f.timeout,
-		Silent: *f.silent, Debug: *f.debug, OutPath: *f.oPath,
+		Opts: opts, InScope: *f.inScope, KeepVersions: *f.keepVersions,
+		Timeout: *f.timeout, Silent: *f.silent, Debug: *f.debug, OutPath: *f.oPath,
 	}
 	deps := run.Deps{
 		Stdout: d.Stdout, Stderr: d.Stderr,
@@ -211,7 +211,7 @@ type runFlags struct {
 	lPath, dArg, oPath, proxy, uKey  *string
 	silent, debug, subs, headless    *bool
 	exact, insecure, kAlias, inScope *bool
-	noRedirect                       *bool
+	noRedirect, keepVersions         *bool
 	depth, conc, rate, uLimit        *int
 	timeout                          *time.Duration
 	headers                          multiFlag
@@ -233,6 +233,7 @@ func bindFlags(fs *flagSet) *runFlags {
 	f.kAlias = fs.Bool("k")
 	f.inScope = fs.Bool("in-scope")
 	f.noRedirect = fs.Bool("no-redirect")
+	f.keepVersions = fs.Bool("keep-versions")
 	f.depth = fs.Int("depth", 2)
 	f.conc = fs.Int("c", 5)
 	f.rate = fs.Int("rate", 100)

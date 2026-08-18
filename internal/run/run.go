@@ -41,12 +41,13 @@ type Config struct {
 	GrepLines []string // -l lines (for grep S1)
 	URLForms  []string // -d normalized urls (for tools)
 	HostForms []string // -d hosts (urlscan + in-scope)
-	Opts      source.Options
-	InScope   bool
-	Timeout   time.Duration
-	Silent    bool
-	Debug     bool
-	OutPath   string
+	Opts         source.Options
+	InScope      bool
+	KeepVersions bool // keep every hash-versioned copy (default: collapse them)
+	Timeout      time.Duration
+	Silent       bool
+	Debug        bool
+	OutPath      string
 }
 
 // Run executes the collection and returns a process exit code.
@@ -234,8 +235,14 @@ func Run(ctx context.Context, cfg Config, d Deps) int {
 		all, dropped = jsfilter.FilterInScope(all, cfg.HostForms)
 	}
 
-	// dedup + sort
-	final := jsfilter.Dedup(all)
+	// dedup + sort. Default collapses ONLY same-file deploy versions (safe:
+	// different-named files never merge); --keep-versions keeps every copy.
+	var final []string
+	if cfg.KeepVersions {
+		final = jsfilter.Dedup(all)
+	} else {
+		final = jsfilter.DedupLogical(all)
+	}
 
 	// write
 	if err := writeOutput(d.Stdout, cfg, final); err != nil {

@@ -26,14 +26,14 @@ func TestIsJS(t *testing.T) {
 		{"F12", "/app.js", true},
 		{"F13", "", false},
 		{"F14", "https://t.com/app.js?file=x.css", true},
-		{"F15", "https://t.com/app.mjs", false},
+		{"F15", "https://t.com/app.mjs", true}, // .mjs is JavaScript
 		{"F16", "  https://t.com/a.js  ", true},
 		{"F17", "https://t.com/app.JS?x=1", true},
 		{"F18", "https://t.com/.js", true},
 		{"F19", "https://t.com:8443/app.js", true},
 		{"F20", "HTTPS://t.com/a.js", true},
 		{"F21", "https://t.com/app%2Ejs", true},
-		{"F22", "https://t.com/app.js.map", false},
+		{"F22", "https://t.com/app.js.map", true}, // sourcemap - keep (juicy)
 		{"F23", "https://t.com/app.min.js.gz", false},
 		{"F24", "https://t.com/page?redirect=/x.js", false},
 		{"F25", "https://t.com/page#/x.js", false},
@@ -44,6 +44,10 @@ func TestIsJS(t *testing.T) {
 		{"F30", "ftp://t.com/app.js", true},
 		{"F31", "https://t.com/appjs", false},
 		{"F32", "https://t.com/a.js?x=/y.css#z.json", true},
+		{"F33", "https://t.com/mod.cjs", true},         // CommonJS
+		{"F34", "https://t.com/app.mjs?v=1", true},      // ES module + query
+		{"F35", "https://t.com/style.css.map", false},   // css sourcemap, not js
+		{"F36", "https://t.com/vendor.js.map", true},    // js sourcemap
 	}
 	for _, c := range cases {
 		_, got := IsJS(c.in)

@@ -144,6 +144,8 @@ URLSCAN
 
 CLEANING
   --in-scope          drop JS outside the -d target scope
+  --keep-versions     keep every hash-versioned copy (default: collapse
+                      app-<hash>.js deploy versions to one url per file)
 
 COMMANDS
   -setup              install the 4 tools

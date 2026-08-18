@@ -1,7 +1,7 @@
 package cli
 
 // Version of fetch.
-const Version = "0.1.0"
+const Version = "0.3.0"
 
 // Banner is printed to stderr on help / bare invocation.
 const Banner = `
@@ -44,6 +44,8 @@ const Help = Banner + `
 
  CLEANING
    --in-scope         drop JS outside the -d target scope (needs -d)
+   --keep-versions    keep every hash-versioned copy (default: collapse to
+                      one url per logical file - e.g. app-<hash>.js)
 
  COMMANDS
    -setup             install the 4 tools (subjs, getJS, katana, hakrawler)
